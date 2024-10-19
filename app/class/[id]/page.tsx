@@ -1,3 +1,5 @@
+'use client'; 
+
 import React, { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { auth, db } from '@/lib/firebase';
@@ -19,7 +21,7 @@ import {
 interface Student {
   name: string;
   photoUrl: string;
-  status: 'absent' | 'present';
+  status?: 'absent' | 'present';
 }
 
 interface JoinRequest {
@@ -34,8 +36,10 @@ export default function ClassPage({ params }: { params: { id: string } }) {
   const [joinRequests, setJoinRequests] = useState<JoinRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
   const [showCamera, setShowCamera] = useState(false);
   const [processing, setProcessing] = useState(false);
+  const [annotatedImage, setAnnotatedImage] = useState<string | null>(null);
   const webcamRef = useRef<Webcam>(null);
 
   useEffect(() => {
@@ -91,6 +95,7 @@ export default function ClassPage({ params }: { params: { id: string } }) {
       setError('Failed to approve join request');
     }
   };
+
   const startAttendance = () => {
     setShowCamera(true);
   };
@@ -103,7 +108,7 @@ export default function ClassPage({ params }: { params: { id: string } }) {
     if (webcamRef.current) {
       setProcessing(true);
       const imageSrc = webcamRef.current.getScreenshot();
-      
+
       try {
         const response = await fetch('/api/recognize-faces', {
           method: 'POST',
@@ -112,16 +117,16 @@ export default function ClassPage({ params }: { params: { id: string } }) {
           },
           body: JSON.stringify({
             attendanceImage: imageSrc,
-            students: classData.students
+            classId: params.id, // Include classId here
           }),
         });
 
-        const results = await response.json();
-        
+        const { attendanceResults, annotatedImage } = await response.json();
+
         // Update student statuses
-        const updatedStudents = classData.students.map((student: Student) => ({
+        const updatedStudents = classData.students.map((student) => ({
           ...student,
-          status: results[student.name] || 'absent'
+          status: attendanceResults[student.name] === 'present' ? 'present' : 'absent',
         }));
 
         setClassData({ ...classData, students: updatedStudents });
@@ -129,6 +134,10 @@ export default function ClassPage({ params }: { params: { id: string } }) {
         // Update Firestore
         await updateDoc(doc(db, 'classes', params.id), { students: updatedStudents });
 
+        // Display the annotated image
+        setAnnotatedImage(annotatedImage);
+
+        setSuccess('Attendance processed successfully!');
         setShowCamera(false);
       } catch (error) {
         console.error('Error recognizing faces:', error);
@@ -138,10 +147,11 @@ export default function ClassPage({ params }: { params: { id: string } }) {
       }
     }
   };
+
   const sortStudents = (students: Student[]) => {
     return [...students].sort((a, b) => {
-      if (a.status === 'absent' && b.status === 'present') return -1;
-      if (a.status === 'present' && b.status === 'absent') return 1;
+      if (a.status === 'absent' && b.status === 'present') return 1;
+      if (a.status === 'present' && b.status === 'absent') return -1;
       return 0;
     });
   };
@@ -153,6 +163,7 @@ export default function ClassPage({ params }: { params: { id: string } }) {
     }));
     setClassData({ ...classData, students: updatedStudents });
     await updateDoc(doc(db, 'classes', params.id), { students: updatedStudents });
+    setSuccess('Attendance reset successfully!');
   };
 
   const updateStudentStatus = async (studentName: string, newStatus: 'absent' | 'present') => {
@@ -164,16 +175,16 @@ export default function ClassPage({ params }: { params: { id: string } }) {
   };
 
   if (loading) return <div>Loading...</div>;
-  if (error) return <div>Error: {error}</div>;
+  if (error) return <div className="text-red-600">Error: {error}</div>;
   if (!classData) return <div>Class not found</div>;
 
   const sortedStudents = sortStudents(classData.students);
 
   return (
     <div className="p-4 md:p-8">
-      <div className="flex justify-between items-center mb-6">
+      <div className="flex flex-col md:flex-row justify-between items-center mb-6">
         <h1 className="text-3xl font-bold">{classData.name}</h1>
-        <div className="space-x-2">
+        <div className="space-x-2 mt-4 md:mt-0">
           <Dialog>
             <DialogTrigger asChild>
               <Button variant="outline">QR Code</Button>
@@ -185,7 +196,7 @@ export default function ClassPage({ params }: { params: { id: string } }) {
               <ClassQRCode classId={params.id} />
             </DialogContent>
           </Dialog>
-          
+
           <Dialog>
             <DialogTrigger asChild>
               <Button variant="outline">Join Requests ({joinRequests.length})</Button>
@@ -219,11 +230,24 @@ export default function ClassPage({ params }: { params: { id: string } }) {
               </div>
             </DialogContent>
           </Dialog>
-          
+
           <Button onClick={startAttendance}>Take Attendance</Button>
           <Button onClick={resetAttendance} variant="destructive">Reset Attendance</Button>
         </div>
       </div>
+
+      {success && (
+        <div className="my-4 text-green-600">
+          {success}
+        </div>
+      )}
+
+      {annotatedImage && (
+        <div className="my-6">
+          <h2 className="text-2xl font-bold mb-4">Attendance Results</h2>
+          <img src={annotatedImage} alt="Annotated Attendance" className="w-full h-auto rounded-md shadow-md" />
+        </div>
+      )}
 
       {showCamera && (
         <div className="fixed inset-0 bg-black z-50 flex flex-col">
@@ -251,7 +275,7 @@ export default function ClassPage({ params }: { params: { id: string } }) {
       <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
         {sortedStudents.length > 0 ? (
           sortedStudents.map((student: Student, index: number) => (
-            <Card key={index} className={student.status === 'absent' ? 'border-red-500' : 'border-green-500'}>
+            <Card key={index} className={student.status === 'present' ? 'border-green-500' : 'border-red-500'}>
               <CardContent className="p-4 flex flex-col items-center">
                 <Image
                   src={student.photoUrl}
@@ -267,7 +291,7 @@ export default function ClassPage({ params }: { params: { id: string } }) {
                   onClick={() => updateStudentStatus(student.name, student.status === 'absent' ? 'present' : 'absent')}
                   className="mt-2"
                 >
-                  {student.status === 'absent' ? 'Absent' : 'Present'}
+                  {student.status === 'absent' ? 'Mark Present' : 'Mark Absent'}
                 </Button>
               </CardContent>
             </Card>
